@@ -1,0 +1,279 @@
+package com.orienteering.hunt.viewmodel
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.orienteering.hunt.data.models.GeoLocation
+import com.orienteering.hunt.data.models.Hunt
+import com.orienteering.hunt.data.models.HuntLocation
+import com.orienteering.hunt.data.models.LeaderboardEntry
+import com.orienteering.hunt.data.models.Player
+import com.orienteering.hunt.data.models.PlayerProgress
+import com.orienteering.hunt.data.repository.HuntRepository
+import com.orienteering.hunt.services.LocationService
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+data class GameUiState(
+    val isLoading: Boolean = false,
+    val error: String? = null,
+    val currentPlayer: Player? = null,
+    val isOnboarding: Boolean = true
+)
+
+data class HuntSelectionUiState(
+    val hunts: List<Hunt> = emptyList(),
+    val isLoading: Boolean = false
+)
+
+data class ActiveHuntUiState(
+    val hunt: Hunt? = null,
+    val progress: PlayerProgress? = null,
+    val currentLocation: GeoLocation? = null,
+    val currentClueIndex: Int = 0,
+    val distanceToTarget: Float? = null,
+    val canCheckIn: Boolean = false,
+    val showCheckInSuccess: Boolean = false,
+    val isCompleted: Boolean = false
+)
+
+data class LeaderboardUiState(
+    val entries: List<LeaderboardEntry> = emptyList(),
+    val isLoading: Boolean = false
+)
+
+class GameViewModel(
+    private val repository: HuntRepository,
+    private val locationService: LocationService
+) : ViewModel() {
+    
+    private val _uiState = MutableStateFlow(GameUiState())
+    val uiState: StateFlow<GameUiState> = _uiState.asStateFlow()
+    
+    private val _huntSelectionState = MutableStateFlow(HuntSelectionUiState())
+    val huntSelectionState: StateFlow<HuntSelectionUiState> = _huntSelectionState.asStateFlow()
+    
+    private val _activeHuntState = MutableStateFlow(ActiveHuntUiState())
+    val activeHuntState: StateFlow<ActiveHuntUiState> = _activeHuntState.asStateFlow()
+    
+    private val _leaderboardState = MutableStateFlow(LeaderboardUiState())
+    val leaderboardState: StateFlow<LeaderboardUiState> = _leaderboardState.asStateFlow()
+    
+    private val _currentLocation = MutableStateFlow<GeoLocation?>(null)
+    val currentLocation: StateFlow<GeoLocation?> = _currentLocation.asStateFlow()
+    
+    private var locationTrackingJob: Job? = null
+    
+    val currentPlayer: StateFlow<Player?> = repository.currentPlayer
+    val activeProgress: StateFlow<PlayerProgress?> = repository.activeProgress
+    
+    init {
+        loadHunts()
+        loadLeaderboard()
+        checkExistingPlayer()
+    }
+    
+    private fun checkExistingPlayer() {
+        viewModelScope.launch {
+            repository.currentPlayer.collect { player ->
+                _uiState.update { state ->
+                    state.copy(
+                        currentPlayer = player,
+                        isOnboarding = player == null
+                    )
+                }
+            }
+        }
+    }
+    
+    fun createPlayer(username: String, displayName: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                val player = repository.initializePlayer(username, displayName)
+                _uiState.update { 
+                    it.copy(
+                        currentPlayer = player,
+                        isOnboarding = false,
+                        isLoading = false
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update { 
+                    it.copy(
+                        error = e.message,
+                        isLoading = false
+                    )
+                }
+            }
+        }
+    }
+    
+    fun loadHunts() {
+        viewModelScope.launch {
+            _huntSelectionState.update { it.copy(isLoading = true) }
+            val hunts = repository.getActiveHunts()
+            _huntSelectionState.update { 
+                it.copy(
+                    hunts = hunts,
+                    isLoading = false
+                )
+            }
+        }
+    }
+    
+    fun startHunt(huntId: String) {
+        viewModelScope.launch {
+            val player = _uiState.value.currentPlayer ?: return@launch
+            val hunt = repository.getHuntById(huntId) ?: return@launch
+            
+            val progress = repository.startHunt(huntId, player.id)
+            
+            _activeHuntState.update {
+                it.copy(
+                    hunt = hunt,
+                    progress = progress,
+                    currentClueIndex = 0,
+                    isCompleted = false
+                )
+            }
+            
+            startLocationTracking()
+        }
+    }
+    
+    private fun startLocationTracking() {
+        locationTrackingJob?.cancel()
+        locationTrackingJob = viewModelScope.launch {
+            locationService.getLocationUpdates().collect { location ->
+                _currentLocation.value = location
+                updateDistanceToTarget(location)
+            }
+        }
+    }
+    
+    private fun updateDistanceToTarget(location: GeoLocation) {
+        val state = _activeHuntState.value
+        val hunt = state.hunt ?: return
+        val progress = state.progress ?: return
+        
+        val currentLocationIndex = progress.currentLocationIndex
+        if (currentLocationIndex >= hunt.locations.size) return
+        
+        val targetLocation = hunt.locations[currentLocationIndex]
+        val distance = locationService.calculateDistance(location, targetLocation.location)
+        val canCheckIn = locationService.isWithinCheckInRadius(location, targetLocation.location)
+        
+        _activeHuntState.update {
+            it.copy(
+                currentLocation = location,
+                distanceToTarget = distance,
+                canCheckIn = canCheckIn
+            )
+        }
+    }
+    
+    fun checkIn(): Boolean {
+        val state = _activeHuntState.value
+        val hunt = state.hunt ?: return false
+        val progress = state.progress ?: return false
+        
+        if (!state.canCheckIn) return false
+        
+        val currentLocationIndex = progress.currentLocationIndex
+        if (currentLocationIndex >= hunt.locations.size) return false
+        
+        val location = hunt.locations[currentLocationIndex]
+        val updatedProgress = progress
+            .markLocationVisited(location.id, location.points)
+            .advanceToNextLocation(hunt.locations.size)
+        
+        repository.updateProgress(updatedProgress)
+        
+        val isCompleted = updatedProgress.isCompleted
+        
+        _activeHuntState.update {
+            it.copy(
+                progress = updatedProgress,
+                showCheckInSuccess = true,
+                isCompleted = isCompleted,
+                canCheckIn = false
+            )
+        }
+        
+        return true
+    }
+    
+    fun dismissCheckInSuccess() {
+        _activeHuntState.update { it.copy(showCheckInSuccess = false) }
+    }
+    
+    fun showHint(): String? {
+        val state = _activeHuntState.value
+        val hunt = state.hunt ?: return null
+        val progress = state.progress ?: return null
+        
+        val currentLocationIndex = progress.currentLocationIndex
+        if (currentLocationIndex >= hunt.locations.size) return null
+        
+        val location = hunt.locations[currentLocationIndex]
+        return location.hint
+    }
+    
+    fun getCurrentClue(): String? {
+        val state = _activeHuntState.value
+        val hunt = state.hunt ?: return null
+        val progress = state.progress ?: return null
+        
+        val currentLocationIndex = progress.currentLocationIndex
+        if (currentLocationIndex >= hunt.locations.size) return null
+        
+        val clue = hunt.clues.find { it.huntLocationId == hunt.locations[currentLocationIndex].id }
+        return clue?.text
+    }
+    
+    fun endHunt() {
+        locationTrackingJob?.cancel()
+        repository.clearActiveProgress()
+        _activeHuntState.value = ActiveHuntUiState()
+    }
+    
+    fun loadLeaderboard(huntId: String? = null) {
+        viewModelScope.launch {
+            _leaderboardState.update { it.copy(isLoading = true) }
+            val entries = repository.getLeaderboard(huntId)
+            _leaderboardState.update {
+                it.copy(
+                    entries = entries,
+                    isLoading = false
+                )
+            }
+        }
+    }
+    
+    fun hasLocationPermissions(): Boolean = locationService.hasLocationPermissions()
+    
+    fun getHuntById(id: String): Hunt? = repository.getHuntById(id)
+    
+    fun getPlayerCompletedHunts(): Int {
+        return _uiState.value.currentPlayer?.completedHunts ?: 0
+    }
+    
+    fun getPlayerTotalPoints(): Int {
+        return _uiState.value.currentPlayer?.totalPoints ?: 0
+    }
+    
+    fun clearError() {
+        _uiState.update { it.copy(error = null) }
+    }
+    
+    override fun onCleared() {
+        super.onCleared()
+        locationTrackingJob?.cancel()
+    }
+}

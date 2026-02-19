@@ -1,0 +1,14 @@
+# Add project specific ProGuard rules here.
+# You can control the set of applied configuration files using the
+# proguardFiles setting in build.gradle.kts.
+# By default, the flags in this file are appended to flags specified
+# in /sdk/tools/proguard/proguard-android.txt
+
+# Keep data models
+-keep class com.orienteering.hunt.data.models.** { *; }
+
+# Keep serialization
+-keepattributes *Annotation*, Signature
+-keepclassmembers class ** {
+    @kotlinx.serialization.Serializable <fields>;
+}
