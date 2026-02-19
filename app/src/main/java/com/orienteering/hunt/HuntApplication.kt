@@ -2,7 +2,7 @@ package com.orienteering.hunt
 
 import android.app.Application
 import com.orienteering.hunt.data.api.ApiService
-import com.orienteering.hunt.data.api.AuthManager
+import com.orienteering.hunt.data.auth.AuthManager
 import com.orienteering.hunt.data.api.KtorApiService
 import com.orienteering.hunt.data.repository.HuntRepository
 import com.orienteering.hunt.services.LocationService

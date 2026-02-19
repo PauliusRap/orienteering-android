@@ -4,7 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.orienteering.hunt.data.api.ApiException
 import com.orienteering.hunt.data.api.ApiService
-import com.orienteering.hunt.data.api.AuthManager
+import com.orienteering.hunt.data.auth.AuthManager
 import com.orienteering.hunt.data.api.toPlayer
 import com.orienteering.hunt.data.models.Player
 import kotlinx.coroutines.flow.MutableStateFlow
