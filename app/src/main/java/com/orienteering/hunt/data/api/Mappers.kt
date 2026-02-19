@@ -45,7 +45,7 @@ fun HuntLocationDto.toHuntLocation(): HuntLocation {
         name = name,
         description = description,
         location = location.toGeoLocation(),
-        hint = hint,
+        hint = hint ?: "",
         points = points,
         order = order
     )

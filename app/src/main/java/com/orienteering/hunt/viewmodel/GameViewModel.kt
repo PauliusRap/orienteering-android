@@ -86,6 +86,17 @@ class GameViewModel(
         }
     }
     
+    fun createPlayer(username: String, displayName: String) {
+        val player = Player(
+            id = username,
+            username = username,
+            displayName = displayName,
+            email = "",
+            isAdmin = false
+        )
+        setPlayer(player)
+    }
+    
     fun loadHunts(search: String? = null, difficulty: String? = null) {
         viewModelScope.launch {
             _huntSelectionState.update { it.copy(isLoading = true, error = null) }
