@@ -1,6 +1,7 @@
 package com.orienteering.hunt.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -10,6 +11,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.orienteering.hunt.HuntApplication
 import com.orienteering.hunt.data.repository.HuntRepository
 import com.orienteering.hunt.services.LocationService
 import com.orienteering.hunt.ui.screens.ActiveHuntScreen
@@ -19,12 +21,17 @@ import com.orienteering.hunt.ui.screens.HuntMapScreen
 import com.orienteering.hunt.ui.screens.HuntSelectionScreen
 import com.orienteering.hunt.ui.screens.HuntStartScreen
 import com.orienteering.hunt.ui.screens.LeaderboardScreen
-import com.orienteering.hunt.ui.screens.OnboardingScreen
+import com.orienteering.hunt.ui.screens.LoginScreen
+import com.orienteering.hunt.ui.screens.ProfileScreen
+import com.orienteering.hunt.ui.screens.RegisterScreen
+import com.orienteering.hunt.viewmodel.AuthViewModel
 import com.orienteering.hunt.viewmodel.GameViewModel
 
 sealed class Screen(val route: String) {
-    object Onboarding : Screen("onboarding")
+    object Login : Screen("login")
+    object Register : Screen("register")
     object Home : Screen("home")
+    object Profile : Screen("profile")
     object HuntSelection : Screen("hunt_selection")
     object HuntStart : Screen("hunt_start/{huntId}") {
         fun createRoute(huntId: String) = "hunt_start/$huntId"
@@ -39,9 +46,23 @@ sealed class Screen(val route: String) {
 fun HuntNavGraph(
     navController: NavHostController,
     repository: HuntRepository,
-    locationService: LocationService
+    locationService: LocationService,
+    application: HuntApplication
 ) {
-    val viewModel: GameViewModel = viewModel(
+    val authViewModel: AuthViewModel = viewModel(
+        factory = remember {
+            object : androidx.lifecycle.ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : androidx.lifecycle.ViewModel> create(
+                    modelClass: Class<T>
+                ): T {
+                    return AuthViewModel(application.apiService, application.authManager) as T
+                }
+            }
+        }
+    )
+    
+    val gameViewModel: GameViewModel = viewModel(
         factory = remember {
             object : androidx.lifecycle.ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -54,33 +75,57 @@ fun HuntNavGraph(
         }
     )
     
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val activeProgress by viewModel.activeProgress.collectAsStateWithLifecycle()
+    val authState by authViewModel.uiState.collectAsStateWithLifecycle()
+    val activeProgress by gameViewModel.activeProgress.collectAsStateWithLifecycle()
     
-    val startDestination = if (uiState.isOnboarding || uiState.currentPlayer == null) {
-        Screen.Onboarding.route
-    } else {
-        Screen.Home.route
+    LaunchedEffect(authState.currentPlayer) {
+        authState.currentPlayer?.let { player ->
+            gameViewModel.setPlayer(player)
+        }
+    }
+    
+    val startDestination = when {
+        authState.isCheckingAuth -> Screen.Login.route
+        authState.isLoggedIn -> Screen.Home.route
+        else -> Screen.Login.route
     }
     
     NavHost(
         navController = navController,
         startDestination = startDestination
     ) {
-        composable(Screen.Onboarding.route) {
-            OnboardingScreen(
-                viewModel = viewModel,
-                onProfileCreated = {
+        composable(Screen.Login.route) {
+            LoginScreen(
+                viewModel = authViewModel,
+                onLoginSuccess = {
                     navController.navigate(Screen.Home.route) {
-                        popUpTo(Screen.Onboarding.route) { inclusive = true }
+                        popUpTo(Screen.Login.route) { inclusive = true }
                     }
+                },
+                onNavigateToRegister = {
+                    navController.navigate(Screen.Register.route)
+                }
+            )
+        }
+        
+        composable(Screen.Register.route) {
+            RegisterScreen(
+                viewModel = authViewModel,
+                onRegisterSuccess = {
+                    navController.navigate(Screen.Home.route) {
+                        popUpTo(Screen.Login.route) { inclusive = true }
+                    }
+                },
+                onNavigateToLogin = {
+                    navController.popBackStack()
                 }
             )
         }
         
         composable(Screen.Home.route) {
             HomeScreen(
-                viewModel = viewModel,
+                viewModel = gameViewModel,
+                authViewModel = authViewModel,
                 onNavigateToHunts = {
                     navController.navigate(Screen.HuntSelection.route)
                 },
@@ -89,13 +134,37 @@ fun HuntNavGraph(
                 },
                 onNavigateToLeaderboard = {
                     navController.navigate(Screen.Leaderboard.route)
+                },
+                onNavigateToProfile = {
+                    navController.navigate(Screen.Profile.route)
+                },
+                onLogout = {
+                    authViewModel.logout()
+                    navController.navigate(Screen.Login.route) {
+                        popUpTo(Screen.Home.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+        
+        composable(Screen.Profile.route) {
+            ProfileScreen(
+                viewModel = authViewModel,
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onLogout = {
+                    authViewModel.logout()
+                    navController.navigate(Screen.Login.route) {
+                        popUpTo(Screen.Home.route) { inclusive = true }
+                    }
                 }
             )
         }
         
         composable(Screen.HuntSelection.route) {
             HuntSelectionScreen(
-                viewModel = viewModel,
+                viewModel = gameViewModel,
                 onHuntSelected = { huntId ->
                     navController.navigate(Screen.HuntStart.createRoute(huntId))
                 },
@@ -112,13 +181,13 @@ fun HuntNavGraph(
             )
         ) { backStackEntry ->
             val huntId = backStackEntry.arguments?.getString("huntId") ?: ""
-            val hunt = viewModel.getHuntById(huntId)
+            val hunt = gameViewModel.getHuntById(huntId)
             
             hunt?.let {
                 HuntStartScreen(
                     hunt = it,
                     onStartHunt = {
-                        viewModel.startHunt(huntId)
+                        gameViewModel.startHunt(huntId)
                         navController.navigate(Screen.ActiveHunt.route) {
                             popUpTo(Screen.Home.route)
                         }
@@ -132,7 +201,7 @@ fun HuntNavGraph(
         
         composable(Screen.ActiveHunt.route) {
             ActiveHuntScreen(
-                viewModel = viewModel,
+                viewModel = gameViewModel,
                 onNavigateBack = {
                     navController.popBackStack(Screen.Home.route, inclusive = false)
                 },
@@ -143,7 +212,7 @@ fun HuntNavGraph(
                     navController.navigate(Screen.CheckIn.route)
                 },
                 onHuntCompleted = {
-                    viewModel.endHunt()
+                    gameViewModel.endHunt()
                     navController.navigate(Screen.Home.route) {
                         popUpTo(Screen.Home.route) { inclusive = true }
                     }
@@ -153,7 +222,7 @@ fun HuntNavGraph(
         
         composable(Screen.HuntMap.route) {
             HuntMapScreen(
-                viewModel = viewModel,
+                viewModel = gameViewModel,
                 onNavigateBack = {
                     navController.popBackStack()
                 }
@@ -162,7 +231,7 @@ fun HuntNavGraph(
         
         composable(Screen.CheckIn.route) {
             CheckInScreen(
-                viewModel = viewModel,
+                viewModel = gameViewModel,
                 onNavigateBack = {
                     navController.popBackStack()
                 },
@@ -174,7 +243,7 @@ fun HuntNavGraph(
         
         composable(Screen.Leaderboard.route) {
             LeaderboardScreen(
-                viewModel = viewModel,
+                viewModel = gameViewModel,
                 onNavigateBack = {
                     navController.popBackStack()
                 }

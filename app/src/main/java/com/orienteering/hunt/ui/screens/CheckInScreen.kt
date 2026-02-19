@@ -76,6 +76,13 @@ fun CheckInScreen(
         if (activeHuntState.showCheckInSuccess) {
             showSuccess = true
             isCheckingIn = false
+            viewModel.dismissCheckInSuccess()
+        }
+    }
+    
+    LaunchedEffect(activeHuntState.isLoading) {
+        if (!activeHuntState.isLoading && isCheckingIn) {
+            isCheckingIn = false
         }
     }
     
@@ -122,13 +129,11 @@ fun CheckInScreen(
                     locationName = currentLocation?.name ?: "Unknown Location",
                     canCheckIn = activeHuntState.canCheckIn,
                     distance = activeHuntState.distanceToTarget,
-                    isCheckingIn = isCheckingIn,
+                    isCheckingIn = activeHuntState.isLoading || isCheckingIn,
+                    error = activeHuntState.error,
                     onCheckIn = {
                         isCheckingIn = true
-                        val success = viewModel.checkIn()
-                        if (!success) {
-                            isCheckingIn = false
-                        }
+                        viewModel.checkIn()
                     }
                 )
             }
@@ -142,6 +147,7 @@ private fun CheckInView(
     canCheckIn: Boolean,
     distance: Float?,
     isCheckingIn: Boolean,
+    error: String?,
     onCheckIn: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -205,6 +211,16 @@ private fun CheckInView(
                 text = if (canCheckIn) "You're at the location!" else displayDistance,
                 style = MaterialTheme.typography.bodyLarge,
                 color = if (canCheckIn) ForestMid else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        
+        error?.let { errorMessage ->
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = errorMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center
             )
         }
         

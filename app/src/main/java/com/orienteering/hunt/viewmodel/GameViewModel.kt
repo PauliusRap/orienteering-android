@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.orienteering.hunt.data.models.GeoLocation
 import com.orienteering.hunt.data.models.Hunt
-import com.orienteering.hunt.data.models.HuntLocation
 import com.orienteering.hunt.data.models.LeaderboardEntry
 import com.orienteering.hunt.data.models.Player
 import com.orienteering.hunt.data.models.PlayerProgress
@@ -12,10 +11,8 @@ import com.orienteering.hunt.data.repository.HuntRepository
 import com.orienteering.hunt.services.LocationService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -28,7 +25,10 @@ data class GameUiState(
 
 data class HuntSelectionUiState(
     val hunts: List<Hunt> = emptyList(),
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    val error: String? = null,
+    val searchQuery: String = "",
+    val selectedDifficulty: String? = null
 )
 
 data class ActiveHuntUiState(
@@ -39,12 +39,16 @@ data class ActiveHuntUiState(
     val distanceToTarget: Float? = null,
     val canCheckIn: Boolean = false,
     val showCheckInSuccess: Boolean = false,
-    val isCompleted: Boolean = false
+    val checkInPoints: Int = 0,
+    val isCompleted: Boolean = false,
+    val isLoading: Boolean = false,
+    val error: String? = null
 )
 
 data class LeaderboardUiState(
     val entries: List<LeaderboardEntry> = emptyList(),
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    val error: String? = null
 )
 
 class GameViewModel(
@@ -72,78 +76,97 @@ class GameViewModel(
     val currentPlayer: StateFlow<Player?> = repository.currentPlayer
     val activeProgress: StateFlow<PlayerProgress?> = repository.activeProgress
     
-    init {
-        loadHunts()
-        loadLeaderboard()
-        checkExistingPlayer()
-    }
-    
-    private fun checkExistingPlayer() {
-        viewModelScope.launch {
-            repository.currentPlayer.collect { player ->
-                _uiState.update { state ->
-                    state.copy(
-                        currentPlayer = player,
-                        isOnboarding = player == null
-                    )
-                }
-            }
+    fun setPlayer(player: Player) {
+        repository.setCurrentPlayer(player)
+        _uiState.update { 
+            it.copy(
+                currentPlayer = player,
+                isOnboarding = false
+            )
         }
     }
     
-    fun createPlayer(username: String, displayName: String) {
+    fun loadHunts(search: String? = null, difficulty: String? = null) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true) }
-            try {
-                val player = repository.initializePlayer(username, displayName)
-                _uiState.update { 
-                    it.copy(
-                        currentPlayer = player,
-                        isOnboarding = false,
-                        isLoading = false
-                    )
+            _huntSelectionState.update { it.copy(isLoading = true, error = null) }
+            
+            repository.refreshHunts(search, difficulty).fold(
+                onSuccess = { hunts ->
+                    _huntSelectionState.update { 
+                        it.copy(
+                            hunts = hunts.filter { hunt -> hunt.isActive },
+                            isLoading = false,
+                            searchQuery = search ?: "",
+                            selectedDifficulty = difficulty
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _huntSelectionState.update { 
+                        it.copy(
+                            isLoading = false,
+                            error = error.message ?: "Failed to load hunts"
+                        )
+                    }
                 }
-            } catch (e: Exception) {
-                _uiState.update { 
-                    it.copy(
-                        error = e.message,
-                        isLoading = false
-                    )
-                }
-            }
+            )
         }
     }
     
-    fun loadHunts() {
+    fun loadLeaderboard(huntId: String? = null) {
         viewModelScope.launch {
-            _huntSelectionState.update { it.copy(isLoading = true) }
-            val hunts = repository.getActiveHunts()
-            _huntSelectionState.update { 
-                it.copy(
-                    hunts = hunts,
-                    isLoading = false
-                )
-            }
+            _leaderboardState.update { it.copy(isLoading = true, error = null) }
+            
+            repository.getLeaderboard(huntId).fold(
+                onSuccess = { entries ->
+                    _leaderboardState.update {
+                        it.copy(
+                            entries = entries,
+                            isLoading = false
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _leaderboardState.update {
+                        it.copy(
+                            isLoading = false,
+                            error = error.message ?: "Failed to load leaderboard"
+                        )
+                    }
+                }
+            )
         }
     }
     
     fun startHunt(huntId: String) {
         viewModelScope.launch {
             val player = _uiState.value.currentPlayer ?: return@launch
-            val hunt = repository.getHuntById(huntId) ?: return@launch
             
-            val progress = repository.startHunt(huntId, player.id)
+            _activeHuntState.update { it.copy(isLoading = true, error = null) }
             
-            _activeHuntState.update {
-                it.copy(
-                    hunt = hunt,
-                    progress = progress,
-                    currentClueIndex = 0,
-                    isCompleted = false
-                )
-            }
-            
-            startLocationTracking()
+            repository.startHunt(huntId, player.id).fold(
+                onSuccess = { progress ->
+                    val hunt = repository.getCachedHuntById(huntId)
+                    _activeHuntState.update {
+                        it.copy(
+                            hunt = hunt,
+                            progress = progress,
+                            currentClueIndex = 0,
+                            isCompleted = false,
+                            isLoading = false
+                        )
+                    }
+                    startLocationTracking()
+                },
+                onFailure = { error ->
+                    _activeHuntState.update {
+                        it.copy(
+                            isLoading = false,
+                            error = error.message ?: "Failed to start hunt"
+                        )
+                    }
+                }
+            )
         }
     }
     
@@ -178,39 +201,44 @@ class GameViewModel(
         }
     }
     
-    fun checkIn(): Boolean {
-        val state = _activeHuntState.value
-        val hunt = state.hunt ?: return false
-        val progress = state.progress ?: return false
-        
-        if (!state.canCheckIn) return false
-        
-        val currentLocationIndex = progress.currentLocationIndex
-        if (currentLocationIndex >= hunt.locations.size) return false
-        
-        val location = hunt.locations[currentLocationIndex]
-        val updatedProgress = progress
-            .markLocationVisited(location.id, location.points)
-            .advanceToNextLocation(hunt.locations.size)
-        
-        repository.updateProgress(updatedProgress)
-        
-        val isCompleted = updatedProgress.isCompleted
-        
-        _activeHuntState.update {
-            it.copy(
-                progress = updatedProgress,
-                showCheckInSuccess = true,
-                isCompleted = isCompleted,
-                canCheckIn = false
+    fun checkIn() {
+        viewModelScope.launch {
+            val state = _activeHuntState.value
+            val hunt = state.hunt ?: return@launch
+            val progress = state.progress ?: return@launch
+            val location = state.currentLocation ?: return@launch
+            
+            if (!state.canCheckIn) return@launch
+            
+            _activeHuntState.update { it.copy(isLoading = true) }
+            
+            repository.checkIn(hunt.id, location.latitude, location.longitude).fold(
+                onSuccess = { (updatedProgress, pointsEarned, isCompleted) ->
+                    _activeHuntState.update {
+                        it.copy(
+                            progress = updatedProgress,
+                            showCheckInSuccess = true,
+                            checkInPoints = pointsEarned,
+                            isCompleted = isCompleted,
+                            canCheckIn = false,
+                            isLoading = false
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _activeHuntState.update {
+                        it.copy(
+                            isLoading = false,
+                            error = error.message ?: "Check-in failed"
+                        )
+                    }
+                }
             )
         }
-        
-        return true
     }
     
     fun dismissCheckInSuccess() {
-        _activeHuntState.update { it.copy(showCheckInSuccess = false) }
+        _activeHuntState.update { it.copy(showCheckInSuccess = false, checkInPoints = 0) }
     }
     
     fun showHint(): String? {
@@ -243,22 +271,32 @@ class GameViewModel(
         _activeHuntState.value = ActiveHuntUiState()
     }
     
-    fun loadLeaderboard(huntId: String? = null) {
+    fun abandonHunt(huntId: String, onAbandoned: () -> Unit) {
         viewModelScope.launch {
-            _leaderboardState.update { it.copy(isLoading = true) }
-            val entries = repository.getLeaderboard(huntId)
-            _leaderboardState.update {
-                it.copy(
-                    entries = entries,
-                    isLoading = false
-                )
-            }
+            _activeHuntState.update { it.copy(isLoading = true, error = null) }
+            
+            repository.abandonHunt(huntId).fold(
+                onSuccess = {
+                    locationTrackingJob?.cancel()
+                    repository.clearActiveProgress()
+                    _activeHuntState.value = ActiveHuntUiState()
+                    onAbandoned()
+                },
+                onFailure = { error ->
+                    _activeHuntState.update {
+                        it.copy(
+                            isLoading = false,
+                            error = error.message ?: "Failed to abandon hunt"
+                        )
+                    }
+                }
+            )
         }
     }
     
     fun hasLocationPermissions(): Boolean = locationService.hasLocationPermissions()
     
-    fun getHuntById(id: String): Hunt? = repository.getHuntById(id)
+    fun getHuntById(id: String): Hunt? = repository.getCachedHuntById(id)
     
     fun getPlayerCompletedHunts(): Int {
         return _uiState.value.currentPlayer?.completedHunts ?: 0
@@ -270,6 +308,9 @@ class GameViewModel(
     
     fun clearError() {
         _uiState.update { it.copy(error = null) }
+        _huntSelectionState.update { it.copy(error = null) }
+        _activeHuntState.update { it.copy(error = null) }
+        _leaderboardState.update { it.copy(error = null) }
     }
     
     override fun onCleared() {

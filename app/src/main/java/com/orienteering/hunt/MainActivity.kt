@@ -17,7 +17,8 @@ import com.orienteering.hunt.ui.theme.OrienteeringHuntTheme
 
 class MainActivity : ComponentActivity() {
     
-    private lateinit var repository: com.orienteering.hunt.data.repository.HuntRepository
+    private lateinit var repository: com.orienteering.hunt.data.repository.
+    HuntRepository
     private lateinit var locationService: com.orienteering.hunt.services.LocationService
     
     private val locationPermissionRequest = registerForActivityResult(
@@ -43,7 +44,8 @@ class MainActivity : ComponentActivity() {
                     HuntNavGraph(
                         navController = navController,
                         repository = repository,
-                        locationService = locationService
+                        locationService = locationService,
+                        application = app
                     )
                 }
             }

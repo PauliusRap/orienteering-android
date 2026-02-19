@@ -66,6 +66,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.bundles.ktor)
+    implementation(libs.datastore.preferences)
 
     debugImplementation(libs.androidx.ui.tooling)
 }

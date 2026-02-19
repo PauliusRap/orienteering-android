@@ -40,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -118,7 +119,10 @@ fun LeaderboardScreen(
                 }
             }
             
-            itemsIndexed(leaderboardState.entries.drop(3)) { index, entry ->
+            itemsIndexed(
+                items = leaderboardState.entries.drop(3),
+                key = { _, entry -> entry.playerId }
+            ) { index: Int, entry: LeaderboardEntry ->
                 AnimatedVisibility(
                     visible = true,
                     enter = fadeIn() + slideInVertically(
