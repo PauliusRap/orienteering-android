@@ -64,7 +64,8 @@ fun HomeScreen(
     val activeProgress by viewModel.activeProgress.collectAsStateWithLifecycle()
     val player = uiState.currentPlayer
     
-    val hasActiveHunt = activeProgress != null && !activeProgress.isCompleted
+    val currentProgress = activeProgress
+    val hasActiveHunt = currentProgress != null && !currentProgress.isCompleted
     
     Column(
         modifier = modifier
